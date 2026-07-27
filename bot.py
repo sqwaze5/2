@@ -28,7 +28,6 @@ while True:
         break
     GROUP_IDS.append(gid)
     i += 1
-
 if not GROUP_IDS:
     legacy = os.getenv("GROUP_ID", "")
     if legacy:
@@ -36,8 +35,24 @@ if not GROUP_IDS:
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
-
 message_ids = []
+
+
+def is_place_removed(game_entry):
+    if not game_entry:
+        return False
+    if game_entry.get("id", 0) == 0:
+        return True
+    if game_entry.get("name") == "[TITLE UNAVAILABLE]":
+        return True
+    creator = game_entry.get("creator") or {}
+    if creator.get("id", 0) == 0 and creator.get("name") == "[UNKNOWN]":
+        return True
+    created = game_entry.get("created", "")
+    if created.startswith("0001-01-01"):
+        return True
+    return False
+
 
 async def get_game_full_data(session, universe_id):
     dev_url = f"https://develop.roblox.com/v1/universes/{universe_id}"
@@ -51,19 +66,29 @@ async def get_game_full_data(session, universe_id):
         name = dev_data.get("name", f"Game {universe_id}")
         root_place = dev_data.get("rootPlaceId")
         link = f"https://www.roblox.com/games/{root_place}" if root_place else None
+
         is_active = dev_data.get("isActive", False)
         privacy = dev_data.get("privacyType", "Private")
         has_game_data = bool(game_data.get("data"))
-        status = is_active and privacy == "Public" and has_game_data
+
+        entry = game_data["data"][0] if has_game_data else None
+        removed = is_place_removed(entry)
+
+        status = is_active and privacy == "Public" and has_game_data and not removed
 
         players = 0
-        if has_game_data:
-            players = game_data["data"][0].get("playing", 0)
+        if has_game_data and not removed:
+            players = entry.get("playing", 0)
+
+        if removed:
+            if name == "[TITLE UNAVAILABLE]" or not name:
+                name = f"Game {universe_id}"
 
         return name, status, players, link
     except Exception as e:
         print(f"Error fetching game {universe_id}: {e}")
         return f"Game {universe_id}", False, 0, None
+
 
 async def get_group_data(session, group_id):
     url = f"https://groups.roblox.com/v1/groups/{group_id}"
@@ -78,9 +103,9 @@ async def get_group_data(session, group_id):
         print(f"Error fetching group {group_id}: {e}")
         return f"Group {group_id}", 0, False
 
+
 async def build_message():
     now = int(time.time())
-
     async with aiohttp.ClientSession() as session:
         games_results, groups_results = await asyncio.gather(
             asyncio.gather(*[get_game_full_data(session, uid) for uid in UNIVERSE_IDS]),
@@ -94,7 +119,6 @@ async def build_message():
 
     lines = []
     lines.append("## ** OUR GAMES **")
-
     for uid, (name, status, players, link) in combined:
         status_text = "Active" if status else "Down"
         icon = "🟢" if status else "🔴"
@@ -133,13 +157,12 @@ async def build_message():
         chunks.append(content[:split_at])
         content = content[split_at:].lstrip("\n")
     chunks.append(content)
-
     return chunks
+
 
 @tasks.loop(seconds=1800)
 async def update_status():
     global message_ids
-
     channel = client.get_channel(CHANNEL_ID)
     if not channel:
         return
@@ -166,9 +189,11 @@ async def update_status():
     except Exception as e:
         print(f"Error updating message: {e}")
 
+
 @client.event
 async def on_ready():
     print(f"Bot started as {client.user}")
     update_status.start()
+
 
 client.run(DISCORD_TOKEN)
