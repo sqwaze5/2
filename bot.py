@@ -272,6 +272,15 @@ async def update_message():
         print(f"Error updating message: {e}")
 
 
+@check_status.before_loop
+async def before_check():
+    await client.wait_until_ready()
+
+@update_message.before_loop
+async def before_update():
+    await client.wait_until_ready()
+    await check_status()  # populate cache before first message send
+
 @client.event
 async def on_ready():
     print(f"Bot started as {client.user}")
