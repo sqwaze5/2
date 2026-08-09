@@ -10,6 +10,8 @@ load_dotenv()
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
+STAFF_CHANNEL_ID = int(os.getenv("STAFF_CHANNEL_ID", "0"))
+
 
 UNIVERSE_IDS = []
 i = 1
@@ -36,6 +38,12 @@ if not GROUP_IDS:
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 message_ids = []
+
+alerted_bans: set[str] = set()
+alerted_down: set[str] = set()
+
+cached_games: list = []
+cached_groups: list = []
 
 
 def is_place_removed(game_entry):
@@ -66,28 +74,23 @@ async def get_game_full_data(session, universe_id):
         name = dev_data.get("name", f"Game {universe_id}")
         root_place = dev_data.get("rootPlaceId")
         link = f"https://www.roblox.com/games/{root_place}" if root_place else None
-
         is_active = dev_data.get("isActive", False)
         privacy = dev_data.get("privacyType", "Private")
         has_game_data = bool(game_data.get("data"))
-
         entry = game_data["data"][0] if has_game_data else None
         removed = is_place_removed(entry)
-
         status = is_active and privacy == "Public" and has_game_data and not removed
-
         players = 0
         if has_game_data and not removed:
             players = entry.get("playing", 0)
-
-        if removed:
-            if name == "[TITLE UNAVAILABLE]" or not name:
-                name = f"Game {universe_id}"
-
-        return name, status, players, link
+        if removed and (name == "[TITLE UNAVAILABLE]" or not name):
+            name = f"Game {universe_id}"
+        creator = dev_data.get("creator") or {}
+        holder_id = creator.get("id")
+        return name, status, players, link, holder_id
     except Exception as e:
         print(f"Error fetching game {universe_id}: {e}")
-        return f"Game {universe_id}", False, 0, None
+        return f"Game {universe_id}", False, 0, None, None
 
 
 async def get_group_data(session, group_id):
@@ -98,42 +101,80 @@ async def get_group_data(session, group_id):
         name = data.get("name", f"Group {group_id}")
         member_count = data.get("memberCount", 0)
         is_locked = data.get("isLocked", False)
-        return name, member_count, is_locked
+        owner = data.get("owner") or {}
+        holder_id = owner.get("userId")
+        return name, member_count, is_locked, holder_id
     except Exception as e:
         print(f"Error fetching group {group_id}: {e}")
-        return f"Group {group_id}", 0, False
+        return f"Group {group_id}", 0, False, None
 
 
-async def build_message():
+async def check_user_banned(session, user_id) -> tuple[bool, str]:
+    if not user_id:
+        return False, "unknown"
+    url = f"https://users.roblox.com/v1/users/{user_id}"
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 404:
+                return True, f"user_{user_id}"
+            data = await resp.json()
+        username = data.get("name", f"user_{user_id}")
+        is_banned = data.get("isBanned", False)
+        return is_banned, username
+    except Exception as e:
+        print(f"Error checking ban for user {user_id}: {e}")
+        return False, f"user_{user_id}"
+
+
+async def send_ban_alert(entity_name: str, entity_type: str, holder_id: int, username: str):
+    staff_channel = client.get_channel(STAFF_CHANNEL_ID)
+    if not staff_channel:
+        print("Staff channel not found")
+        return
+    ping = "@everyone "
+    profile = f"https://www.roblox.com/users/{holder_id}/profile"
+    await staff_channel.send(
+        f"{ping}⚠️ **BAN DETECTED**\n"
+        f"> **{entity_type}:** {entity_name}\n"
+        f"> **Holder:** [{username}](<{profile}>) (`{holder_id}`)\n"
+        f"> **Status:** 🔨 Account terminated / banned on Roblox\n"
+        f"> <t:{int(time.time())}:F>"
+    )
+
+
+async def send_down_alert(game_name: str, universe_id: str):
+    staff_channel = client.get_channel(STAFF_CHANNEL_ID)
+    if not staff_channel:
+        return
+    ping = "@everyone "
+    await staff_channel.send(
+        f"{ping}🔴 **GAME DOWN**\n"
+        f"> **Game:** {game_name}\n"
+        f"> **Universe ID:** `{universe_id}`\n"
+        f"> <t:{int(time.time())}:F>"
+    )
+
+
+def build_message_from_cache() -> list[str]:
     now = int(time.time())
-    async with aiohttp.ClientSession() as session:
-        games_results, groups_results = await asyncio.gather(
-            asyncio.gather(*[get_game_full_data(session, uid) for uid in UNIVERSE_IDS]),
-            asyncio.gather(*[get_group_data(session, gid) for gid in GROUP_IDS]),
-        )
-
-    combined = list(zip(UNIVERSE_IDS, games_results))
+    combined = list(zip(UNIVERSE_IDS, cached_games))
     combined.sort(key=lambda x: x[1][2], reverse=True)
+    total_online = sum(r[2] for _, r in combined)
 
-    total_online = sum(result[2] for _, result in combined)
-
-    lines = []
-    lines.append("## ** OUR GAMES **")
-    for uid, (name, status, players, link) in combined:
-        status_text = "Active" if status else "Down"
+    lines = ["## ** OUR GAMES **"]
+    for uid, (name, status, players, link, holder_id) in combined:
         icon = "🟢" if status else "🔴"
-        block = (
+        status_text = "Active" if status else "Down"
+        lines.append(
             f"**{name}**\n"
             f"> * Game Status: {status_text} {icon}\n"
             f"> * Online: {players} 👥\n"
             f"[JOIN GAME](<{link}>) 👈\n"
         )
-        lines.append(block)
-
     lines.append(f"**Total Online: {total_online} 👥**\n")
 
     group_lines = []
-    for gid, (group_name, member_count, is_locked) in zip(GROUP_IDS, groups_results):
+    for gid, (group_name, member_count, is_locked, holder_id) in zip(GROUP_IDS, cached_groups):
         if not is_locked:
             group_link = f"https://www.roblox.com/groups/{gid}"
             group_lines.append(
@@ -141,7 +182,6 @@ async def build_message():
                 f"> * Members: {member_count:,} 👥\n"
                 f"[JOIN GROUP](<{group_link}>) 👈\n"
             )
-
     if group_lines:
         lines.append("## \n** OUR GROUPS **")
         lines.extend(group_lines)
@@ -160,14 +200,56 @@ async def build_message():
     return chunks
 
 
+@tasks.loop(seconds=300)
+async def check_status():
+    global cached_games, cached_groups
+
+    async with aiohttp.ClientSession() as session:
+        games_results, groups_results = await asyncio.gather(
+            asyncio.gather(*[get_game_full_data(session, uid) for uid in UNIVERSE_IDS]),
+            asyncio.gather(*[get_group_data(session, gid) for gid in GROUP_IDS]),
+        )
+
+        cached_games = list(games_results)
+        cached_groups = list(groups_results)
+
+        for uid, (name, status, players, link, holder_id) in zip(UNIVERSE_IDS, cached_games):
+            if not status and uid not in alerted_down:
+                alerted_down.add(uid)
+                await send_down_alert(name, uid)
+            elif status and uid in alerted_down:
+                alerted_down.discard(uid)
+
+        checks = []
+        for uid, (name, status, players, link, holder_id) in zip(UNIVERSE_IDS, cached_games):
+            if holder_id:
+                checks.append(("Game", name, uid, holder_id))
+        for gid, (g_name, member_count, is_locked, holder_id) in zip(GROUP_IDS, cached_groups):
+            if holder_id:
+                checks.append(("Group", g_name, gid, holder_id))
+
+        ban_results = await asyncio.gather(*[check_user_banned(session, c[3]) for c in checks])
+
+        for (entity_type, entity_name, entity_id, holder_id), (is_banned, username) in zip(checks, ban_results):
+            alert_key = f"{entity_type}:{entity_id}:{holder_id}"
+            if is_banned and alert_key not in alerted_bans:
+                alerted_bans.add(alert_key)
+                await send_ban_alert(entity_name, entity_type, holder_id, username)
+            elif not is_banned:
+                alerted_bans.discard(alert_key)
+
+
 @tasks.loop(seconds=1800)
-async def update_status():
+async def update_message():
     global message_ids
+    if not cached_games:
+        return
+
     channel = client.get_channel(CHANNEL_ID)
     if not channel:
         return
 
-    chunks = await build_message()
+    chunks = build_message_from_cache()
 
     try:
         if not message_ids:
@@ -193,7 +275,8 @@ async def update_status():
 @client.event
 async def on_ready():
     print(f"Bot started as {client.user}")
-    update_status.start()
+    check_status.start()
+    update_message.start()
 
 
 client.run(DISCORD_TOKEN)
