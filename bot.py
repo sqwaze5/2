@@ -41,6 +41,7 @@ message_ids = []
 
 alerted_bans: set[str] = set()
 alerted_down: set[str] = set()
+alerted_group_locked: set[str] = set()
 
 cached_games: list = []
 cached_groups: list = []
@@ -158,6 +159,19 @@ async def send_down_alert(game_name: str, universe_id: str):
     )
 
 
+async def send_group_locked_alert(group_name: str, group_id: str):
+    staff_channel = client.get_channel(STAFF_CHANNEL_ID)
+    if not staff_channel:
+        return
+    group_link = f"https://www.roblox.com/groups/{group_id}"
+    await staff_channel.send(
+        f"**group locked 🔒⚠️**\n"
+        f"> **Group:** [{group_name}](<{group_link}>)\n"
+        f"> **Time:** <t:{int(time.time())}:F>\n"
+        f"||@everyone||"
+    )
+
+
 def build_message_from_cache() -> list[str]:
     now = int(time.time())
     combined = list(zip(UNIVERSE_IDS, cached_games))
@@ -222,6 +236,13 @@ async def check_status():
             elif status and uid in alerted_down:
                 alerted_down.discard(uid)
 
+        for gid, (g_name, member_count, is_locked, holder_id) in zip(GROUP_IDS, cached_groups):
+            if is_locked and gid not in alerted_group_locked:
+                alerted_group_locked.add(gid)
+                await send_group_locked_alert(g_name, gid)
+            elif not is_locked and gid in alerted_group_locked:
+                alerted_group_locked.discard(gid)
+
         checks = []
         for uid, (name, status, players, link, holder_id) in zip(UNIVERSE_IDS, cached_games):
             if holder_id:
@@ -281,7 +302,7 @@ async def before_check():
 @update_message.before_loop
 async def before_update():
     await client.wait_until_ready()
-    await check_status()  # populate cache before first message send
+    await check_status()
 
 @client.event
 async def on_ready():
