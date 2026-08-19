@@ -173,37 +173,41 @@ async def send_group_locked_alert(group_name: str, group_id: str):
 
 
 def build_message_from_cache() -> list[str]:
-    now = int(time.time())
     combined = list(zip(UNIVERSE_IDS, cached_games))
     combined.sort(key=lambda x: x[1][2], reverse=True)
     total_online = sum(r[2] for _, r in combined)
-    total_members = sum(r[1] for _, r in zip(GROUP_IDS, cached_groups))
 
-    lines = []
+    games_header = "OUR GAMES" if len(combined) > 1 else "OUR GAME"
+    lines = [f"## **{games_header} **"]
 
     for uid, (name, status, players, link, holder_id) in combined:
         icon = "🟢" if status else "🔴"
         status_text = "Active" if status else "Down"
         game_link = link or f"https://www.roblox.com/games/{uid}"
         lines.append(
-            f"## **OUR GAMES **\n"
             f"***{name}***\n"
             f"> -# Game Status: {status_text} {icon}\n"
             f"> -# Online: {players} 👥\n"
-            f"[__**JOIN GAME**__](<{game_link}>) \n"
-            f"-# **Total Online: {total_online}** 👥"
+            f"[__**JOIN GAME**__](<{game_link}>)"
         )
 
-    for gid, (group_name, member_count, is_locked, holder_id) in zip(GROUP_IDS, cached_groups):
-        if not is_locked:
+    lines.append(f"-# **Total Online: {total_online}** 👥")
+
+    valid_groups = [(gid, g) for gid, g in zip(GROUP_IDS, cached_groups) if not g[2]]
+    if valid_groups:
+        groups_header = "OUR GROUPS" if len(valid_groups) > 1 else "OUR GROUP"
+        lines.append(f"## **{groups_header}**")
+        total_members = sum(g[1] for _, g in valid_groups)
+
+        for gid, (group_name, member_count, is_locked, holder_id) in valid_groups:
             group_link = f"https://www.roblox.com/groups/{gid}"
             lines.append(
-                f"## **OUR GROUP**\n"
                 f"***{group_name}***\n"
                 f"> -# Members: {member_count:,} 👥\n"
-                f"[__**JOIN GROUP**__](<{group_link}>)\n"
-                f"-# **Total Members: {member_count:,}** 👥"
+                f"[__**JOIN GROUP**__](<{group_link}>)"
             )
+
+        lines.append(f"-# **Total Members: {total_members:,}** 👥")
 
     content = "\n".join(lines)
     chunks = []
