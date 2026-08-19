@@ -188,7 +188,7 @@ def build_message_from_cache() -> list[str]:
             f"***{name}***\n"
             f"> -# Game Status: {status_text} {icon}\n"
             f"> -# Online: {players} 👥\n"
-            f"[__**JOIN GAME**__](<{game_link}>)"
+            f"[__**JOIN GAME**__](<{game_link}>) \n"
         )
 
     lines.append(f"-# **Total Online: {total_online}** 👥")
@@ -196,15 +196,15 @@ def build_message_from_cache() -> list[str]:
     valid_groups = [(gid, g) for gid, g in zip(GROUP_IDS, cached_groups) if not g[2]]
     if valid_groups:
         groups_header = "OUR GROUPS" if len(valid_groups) > 1 else "OUR GROUP"
-        lines.append(f"## **{groups_header}**")
         total_members = sum(g[1] for _, g in valid_groups)
+        lines.append(f"## **{groups_header}**")
 
         for gid, (group_name, member_count, is_locked, holder_id) in valid_groups:
             group_link = f"https://www.roblox.com/groups/{gid}"
             lines.append(
                 f"***{group_name}***\n"
                 f"> -# Members: {member_count:,} 👥\n"
-                f"[__**JOIN GROUP**__](<{group_link}>)"
+                f"[__**JOIN GROUP**__](<{group_link}>)\n"
             )
 
         lines.append(f"-# **Total Members: {total_members:,}** 👥")
@@ -219,6 +219,7 @@ def build_message_from_cache() -> list[str]:
         content = content[split_at:].lstrip("\n")
     chunks.append(content)
     return chunks
+
 
 @tasks.loop(seconds=300)
 async def check_status():
