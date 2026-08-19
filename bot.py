@@ -129,16 +129,14 @@ async def check_user_banned(session, user_id) -> tuple[bool, str]:
 async def send_ban_alert(entity_name: str, entity_type: str, holder_id: int, username: str):
     staff_channel = client.get_channel(STAFF_CHANNEL_ID)
     if not staff_channel:
-        print("Staff channel not found")
         return
-    ping = "@everyone "
     profile = f"https://www.roblox.com/users/{holder_id}/profile"
     await staff_channel.send(
-        f"{ping}⚠️ **BAN DETECTED**\n"
-        f"> **{entity_type}:** {entity_name}\n"
-        f"> **Holder:** [{username}](<{profile}>) (`{holder_id}`)\n"
-        f"> **Status:** 🔨 Account terminated / banned on Roblox\n"
-        f"> <t:{int(time.time())}:F>"
+        f"**holder banned 🔨⚠️**\n"
+        f"> **{entity_type}:** [{entity_name}](<{profile}>)\n"
+        f"> **Holder:** {username} (`{holder_id}`)\n"
+        f"> **Time:** <t:{int(time.time())}:F>\n"
+        f"||@everyone||"
     )
 
 
@@ -146,12 +144,17 @@ async def send_down_alert(game_name: str, universe_id: str):
     staff_channel = client.get_channel(STAFF_CHANNEL_ID)
     if not staff_channel:
         return
-    ping = "@everyone "
+    root_place = None
+    for uid, (name, status, players, link, holder_id) in zip(UNIVERSE_IDS, cached_games):
+        if uid == universe_id:
+            root_place = link
+            break
+    game_link = root_place or f"https://www.roblox.com/games/{universe_id}"
     await staff_channel.send(
-        f"{ping}🔴 **GAME DOWN**\n"
-        f"> **Game:** {game_name}\n"
-        f"> **Universe ID:** `{universe_id}`\n"
-        f"> <t:{int(time.time())}:F>"
+        f"**game deleted 🔴⚠️**\n"
+        f"> **Game:** [{game_name}](<{game_link}>)\n"
+        f"> **Time:** <t:{int(time.time())}:F>\n"
+        f"||@everyone||"
     )
 
 
@@ -160,33 +163,33 @@ def build_message_from_cache() -> list[str]:
     combined = list(zip(UNIVERSE_IDS, cached_games))
     combined.sort(key=lambda x: x[1][2], reverse=True)
     total_online = sum(r[2] for _, r in combined)
+    total_members = sum(r[1] for _, r in zip(GROUP_IDS, cached_groups))
 
-    lines = ["## ** OUR GAMES **"]
+    lines = []
+
     for uid, (name, status, players, link, holder_id) in combined:
         icon = "🟢" if status else "🔴"
         status_text = "Active" if status else "Down"
+        game_link = link or f"https://www.roblox.com/games/{uid}"
         lines.append(
-            f"**{name}**\n"
-            f"> * Game Status: {status_text} {icon}\n"
-            f"> * Online: {players} 👥\n"
-            f"[JOIN GAME](<{link}>) 👈\n"
+            f"## **OUR GAMES **\n"
+            f"***{name}***\n"
+            f"> -# Game Status: {status_text} {icon}\n"
+            f"> -# Online: {players} 👥\n"
+            f"[__**JOIN GAME**__](<{game_link}>) \n"
+            f"-# **Total Online: {total_online}** 👥"
         )
-    lines.append(f"**Total Online: {total_online} 👥**\n")
 
-    group_lines = []
     for gid, (group_name, member_count, is_locked, holder_id) in zip(GROUP_IDS, cached_groups):
         if not is_locked:
             group_link = f"https://www.roblox.com/groups/{gid}"
-            group_lines.append(
-                f"**{group_name}**\n"
-                f"> * Members: {member_count:,} 👥\n"
-                f"[JOIN GROUP](<{group_link}>) 👈\n"
+            lines.append(
+                f"## **OUR GROUP**\n"
+                f"***{group_name}***\n"
+                f"> -# Members: {member_count:,} 👥\n"
+                f"[__**JOIN GROUP**__](<{group_link}>)\n"
+                f"-# **Total Members: {member_count:,}** 👥"
             )
-    if group_lines:
-        lines.append("## \n** OUR GROUPS **")
-        lines.extend(group_lines)
-
-    lines.append(f"\n⏱ Last Update: <t:{now}:R>")
 
     content = "\n".join(lines)
     chunks = []
@@ -198,7 +201,6 @@ def build_message_from_cache() -> list[str]:
         content = content[split_at:].lstrip("\n")
     chunks.append(content)
     return chunks
-
 
 @tasks.loop(seconds=300)
 async def check_status():
